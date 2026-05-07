@@ -6,37 +6,8 @@
 #include <cstring>
 #include <fstream>
 #include <sstream>
-#include <vulkan/vulkan.h>
-
-// Convert VkResult to string for error reporting
-const char* vk_result_to_string(VkResult result) {
-    switch (result) {
-        case VK_SUCCESS: return "VK_SUCCESS";
-        case VK_NOT_READY: return "VK_NOT_READY";
-        case VK_TIMEOUT: return "VK_TIMEOUT";
-        case VK_EVENT_SET: return "VK_EVENT_SET";
-        case VK_EVENT_RESET: return "VK_EVENT_RESET";
-        case VK_INCOMPLETE: return "VK_INCOMPLETE";
-        case VK_ERROR_OUT_OF_HOST_MEMORY: return "VK_ERROR_OUT_OF_HOST_MEMORY";
-        case VK_ERROR_OUT_OF_DEVICE_MEMORY: return "VK_ERROR_OUT_OF_DEVICE_MEMORY";
-        case VK_ERROR_INITIALIZATION_FAILED: return "VK_ERROR_INITIALIZATION_FAILED";
-        case VK_ERROR_DEVICE_LOST: return "VK_ERROR_DEVICE_LOST";
-        case VK_ERROR_MEMORY_MAP_FAILED: return "VK_ERROR_MEMORY_MAP_FAILED";
-        case VK_ERROR_LAYER_NOT_PRESENT: return "VK_ERROR_LAYER_NOT_PRESENT";
-        case VK_ERROR_EXTENSION_NOT_PRESENT: return "VK_ERROR_EXTENSION_NOT_PRESENT";
-        case VK_ERROR_FEATURE_NOT_PRESENT: return "VK_ERROR_FEATURE_NOT_PRESENT";
-        case VK_ERROR_INCOMPATIBLE_DRIVER: return "VK_ERROR_INCOMPATIBLE_DRIVER";
-        case VK_ERROR_TOO_MANY_OBJECTS: return "VK_ERROR_TOO_MANY_OBJECTS";
-        case VK_ERROR_FORMAT_NOT_SUPPORTED: return "VK_ERROR_FORMAT_NOT_SUPPORTED";
-        case VK_ERROR_FRAGMENTED_POOL: return "VK_ERROR_FRAGMENTED_POOL";
-        case VK_ERROR_UNKNOWN: return "VK_ERROR_UNKNOWN";
-        case VK_ERROR_OUT_OF_POOL_MEMORY: return "VK_ERROR_OUT_OF_POOL_MEMORY";
-        case VK_ERROR_INVALID_EXTERNAL_HANDLE: return "VK_ERROR_INVALID_EXTERNAL_HANDLE";
-        case VK_ERROR_FRAGMENTATION: return "VK_ERROR_FRAGMENTATION";
-        case VK_ERROR_INVALID_OPAQUE_CAPTURE_ADDRESS: return "VK_ERROR_INVALID_OPAQUE_CAPTURE_ADDRESS";
-        default: return "UNKNOWN_VK_RESULT";
-    }
-}
+#include <dirent.h>
+#include <vulkan/vulkan.hpp>
 
 struct PciAddress {
     uint16_t domain;
@@ -46,7 +17,11 @@ struct PciAddress {
 };
 
 int setup_sriov_vfs(const PciAddress& pci_addr, int num_vfs) {
+    int ret = 1;  // Default to error
     char sysfs_path[128];
+    int current_vfs = 0;
+    int final_vfs = 0;
+
     snprintf(sysfs_path, sizeof(sysfs_path),
              "/sys/bus/pci/devices/%04x:%02x:%02x.%d/sriov_numvfs",
              pci_addr.domain, pci_addr.bus, pci_addr.device, pci_addr.function);
@@ -58,7 +33,6 @@ int setup_sriov_vfs(const PciAddress& pci_addr, int num_vfs) {
         return 1;
     }
 
-    int current_vfs = 0;
     current_file >> current_vfs;
     current_file.close();
 
@@ -85,7 +59,7 @@ int setup_sriov_vfs(const PciAddress& pci_addr, int num_vfs) {
     std::ofstream enable_file(sysfs_path);
     if (!enable_file.is_open()) {
         std::fprintf(stderr, "ERROR: Cannot write to %s\n", sysfs_path);
-        return 1;
+        goto err;
     }
 
     enable_file << num_vfs;
@@ -93,24 +67,28 @@ int setup_sriov_vfs(const PciAddress& pci_addr, int num_vfs) {
 
     if (enable_file.fail()) {
         std::fprintf(stderr, "ERROR: Failed to write to %s\n", sysfs_path);
-        return 1;
+        goto err;
     }
 
     // Verify
     sleep(1);
-    std::ifstream verify_file(sysfs_path);
-    int final_vfs = 0;
-    verify_file >> final_vfs;
-    verify_file.close();
+    {
+        std::ifstream verify_file(sysfs_path);
+        verify_file >> final_vfs;
+        verify_file.close();
+    }
 
-    if (final_vfs == num_vfs) {
-        std::printf("SUCCESS: Created %d VFs\n", num_vfs);
-        return 0;
-    } else {
+    if (final_vfs != num_vfs) {
         std::fprintf(stderr, "ERROR: Verification failed (expected %d, got %d)\n",
                      num_vfs, final_vfs);
-        return 1;
+        goto err;
     }
+
+    std::printf("SUCCESS: Created %d VFs\n", num_vfs);
+    ret = 0;
+
+err:
+    return ret;
 }
 
 void print_usage(const char* program) {
@@ -124,20 +102,24 @@ void print_usage(const char* program) {
 
 // Returns: 0 = not found, 1 = found one, 2 = found multiple
 int detect_intel_b50_pci(PciAddress& out_addr, std::vector<PciAddress>& found_devices) {
+    int ret = 0;  // Default to not found
     const char* sysfs_path = "/sys/bus/pci/devices";
+    DIR* dir = nullptr;
+    struct dirent* entry;
 
-    // Scan all entries using popen
-    FILE* pipe = popen("ls /sys/bus/pci/devices/ 2>/dev/null", "r");
-    if (!pipe) return 0;
+    dir = opendir(sysfs_path);
+    if (!dir) {
+        ret = 0;
+        goto err;
+    }
 
-    char buf[256];
-    while (fgets(buf, sizeof(buf), pipe) != nullptr) {
-        // Remove newline
-        buf[strcspn(buf, "\n")] = 0;
+    while ((entry = readdir(dir)) != nullptr) {
+        // Skip . and .. and hidden files
+        if (entry->d_name[0] == '.') continue;
 
         char vendor_path[256], device_path_str[256];
-        snprintf(vendor_path, sizeof(vendor_path), "%s/%s/vendor", sysfs_path, buf);
-        snprintf(device_path_str, sizeof(device_path_str), "%s/%s/device", sysfs_path, buf);
+        snprintf(vendor_path, sizeof(vendor_path), "%s/%s/vendor", sysfs_path, entry->d_name);
+        snprintf(device_path_str, sizeof(device_path_str), "%s/%s/device", sysfs_path, entry->d_name);
 
         std::ifstream vendor_file(vendor_path);
         std::ifstream dev_file(device_path_str);
@@ -148,16 +130,12 @@ int detect_intel_b50_pci(PciAddress& out_addr, std::vector<PciAddress>& found_de
             dev_file >> std::hex >> device_id;
 
             // Intel vendor ID: 0x8086
-            // Battlemage (BMG) device IDs: 0xe212 (Arc Pro B50), etc.
-            if (vendor_id == 0x8086 && (device_id == 0xe212 || device_id == 0xe213 ||
-                device_id == 0xe214 || device_id == 0xe215 || device_id == 0xe216 ||
-                device_id == 0xe217 || device_id == 0xe218 || device_id == 0xe219 ||
-                device_id == 0x56a0 || device_id == 0x56a1 || device_id == 0x56a2)) {
+            // Battlemage (BMG) device IDs: 0xe212 (Arc Pro B50), FIXME
+            if (vendor_id == 0x8086 && (device_id == 0xe212)) {
 
                 unsigned int domain, bus, dev, func;
-                if (std::sscanf(buf, "%x:%x:%x.%x", &domain, &bus, &dev, &func) == 4) {
-                    // Only consider function 0 (main VGA controller) to avoid
-                    // counting the same physical device multiple times
+                if (std::sscanf(entry->d_name, "%x:%x:%x.%x", &domain, &bus, &dev, &func) == 4) {
+                    // Only consider function 0 (main VGA controller)
                     if (func != 0) continue;
 
                     PciAddress addr{};
@@ -171,40 +149,79 @@ int detect_intel_b50_pci(PciAddress& out_addr, std::vector<PciAddress>& found_de
         }
     }
 
-    pclose(pipe);
-
     if (found_devices.empty()) {
-        return 0;  // Not found
+        ret = 0;
     } else if (found_devices.size() == 1) {
         out_addr = found_devices[0];
-        return 1;  // Found one
+        ret = 1;
     } else {
-        return 2;  // Found multiple
+        ret = 2;
     }
+
+err:
+    if (dir) closedir(dir);
+    return ret;
 }
 
 int main(int argc, char* argv[]) {
-    // Parse command line arguments
     uint16_t target_domain = 0;
     uint8_t target_bus = 0;
     uint8_t target_device = 0;
-    uint8_t target_function = 0;  // Always 0 (function 0 = main device)
+    uint8_t target_function = 0;
     bool auto_detect = true;
     int num_vfs = 0;
-    uint32_t memory_mb = 2048;  // Default 2GB
+    uint32_t memory_mb = 2048;
+    
+    VkInstance instance = VK_NULL_HANDLE;
+    VkPhysicalDevice physical_device = VK_NULL_HANDLE;
+    VkDevice device = VK_NULL_HANDLE;
+    VkBuffer buffer = VK_NULL_HANDLE;
+    VkDeviceMemory device_memory = VK_NULL_HANDLE;
+    VkResult result;
+    
+    VkApplicationInfo app_info{};
+    VkInstanceCreateInfo instance_info{};
+    VkDeviceQueueCreateInfo queue_info{};
+    VkDeviceCreateInfo device_info{};
+    VkBufferCreateInfo buffer_info{};
+    VkMemoryAllocateInfo alloc_info{};
+    VkPhysicalDeviceMemoryProperties memory_properties{};
+    
+    uint32_t memory_type_index = UINT32_MAX;
+    VkDeviceSize allocation_size = 0;
+    float queue_priority = 1.0f;
+    
+    std::vector<VkPhysicalDevice> physical_devices;
+
+    // Parse command line arguments
 
     for (int i = 1; i < argc; i++) {
-        if (strcmp(argv[i], "--pci") == 0 && i + 1 < argc) {
-            // Parse format: domain:bus:device (e.g., 0000:0d:00)
-            sscanf(argv[++i], "%hx:%hhx:%hhx", &target_domain, &target_bus, &target_device);
-            auto_detect = false;
-        } else if (strcmp(argv[i], "--sriov") == 0 && i + 1 < argc) {
-            num_vfs = atoi(argv[++i]);
-        } else if (strcmp(argv[i], "--memory") == 0 && i + 1 < argc) {
-            memory_mb = (uint32_t)atoi(argv[++i]);
-        } else if (strcmp(argv[i], "--help") == 0) {
-            print_usage(argv[0]);
-            return 0;
+        const char* arg = argv[i];
+        
+        // Quick first-character check before strcmp
+        switch (arg[2]) {
+            case 'p':  // --pci
+                if (strcmp(arg, "--pci") == 0 && i + 1 < argc) {
+                    sscanf(argv[++i], "%hx:%hhx:%hhx", &target_domain, &target_bus, &target_device);
+                    auto_detect = false;
+                }
+                break;
+            case 's':  // --sriov
+                if (strcmp(arg, "--sriov") == 0 && i + 1 < argc) {
+                    num_vfs = atoi(argv[++i]);
+                }
+                break;
+            case 'm':  // --memory
+                if (strcmp(arg, "--memory") == 0 && i + 1 < argc) {
+                    memory_mb = (uint32_t)atoi(argv[++i]);
+                }
+                break;
+            case 'h':  // --help
+                if (strcmp(arg, "--help") == 0) {
+                    print_usage(argv[0]);
+                    return 0;
+                }
+                break;
         }
     }
 
@@ -240,8 +257,7 @@ int main(int argc, char* argv[]) {
         std::printf("Target PCI device: %04x:%02x:%02x.%d\n", target_domain, target_bus, target_device, 0);
     }
 
-    // Allocate GPU memory on first Intel GPU (sysfs already verified target PCI device)
-    VkApplicationInfo app_info{};
+    // Allocate GPU memory on first Intel GPU
     app_info.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
     app_info.pApplicationName = "b50-sriov-alloc";
     app_info.applicationVersion = VK_MAKE_VERSION(1, 0, 0);
@@ -249,90 +265,69 @@ int main(int argc, char* argv[]) {
     app_info.engineVersion = VK_MAKE_VERSION(1, 0, 0);
     app_info.apiVersion = VK_API_VERSION_1_0;
 
-    VkInstanceCreateInfo instance_info{};
     instance_info.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
     instance_info.pApplicationInfo = &app_info;
 
-    VkInstance instance;
-    VkResult result = vkCreateInstance(&instance_info, nullptr, &instance);
+    result = vkCreateInstance(&instance_info, nullptr, &instance);
     if (result != VK_SUCCESS) {
-        std::fprintf(stderr, "Failed to create Vulkan instance: %s\n", vk_result_to_string(result));
+        std::fprintf(stderr, "Failed to create Vulkan instance: %s\n", vk::to_string( static_cast<vk::Result>( result ) ).c_str());
         return 1;
     }
 
+    // Enumerate physical devices
     uint32_t device_count = 0;
     result = vkEnumeratePhysicalDevices(instance, &device_count, nullptr);
-    if (result != VK_SUCCESS) {
-        std::fprintf(stderr, "Failed to enumerate physical devices: %s\n", vk_result_to_string(result));
-        vkDestroyInstance(instance, nullptr);
-        return 1;
+    if (result != VK_SUCCESS || device_count == 0) {
+        std::fprintf(stderr, "Failed to enumerate physical devices: %s\n", vk::to_string( static_cast<vk::Result>( result ) ).c_str());
+        goto err_destroy_instance;
     }
 
-    if (device_count == 0) {
-        std::fprintf(stderr, "No Vulkan devices found\n");
-        vkDestroyInstance(instance, nullptr);
-        return 1;
-    }
-
-    std::vector<VkPhysicalDevice> physical_devices(device_count);
+    physical_devices.resize(device_count);
     result = vkEnumeratePhysicalDevices(instance, &device_count, physical_devices.data());
     if (result != VK_SUCCESS) {
-        std::fprintf(stderr, "Failed to enumerate physical devices: %s\n", vk_result_to_string(result));
-        vkDestroyInstance(instance, nullptr);
-        return 1;
+        std::fprintf(stderr, "Failed to enumerate physical devices: %s\n", vk::to_string( static_cast<vk::Result>( result ) ).c_str());
+        goto err_destroy_instance;
     }
 
     // Select Intel Arc Pro B50 (device ID 0xe212)
-    VkPhysicalDevice physical_device = VK_NULL_HANDLE;
     std::printf("\nAvailable Vulkan devices:\n");
-
-    for (const auto& device : physical_devices) {
+    for (const auto& dev : physical_devices) {
         VkPhysicalDeviceProperties props{};
-        vkGetPhysicalDeviceProperties(device, &props);
+        vkGetPhysicalDeviceProperties(dev, &props);
         std::printf("  - %s (vendor 0x%04x, device 0x%04x)\n", props.deviceName, props.vendorID, props.deviceID);
 
-        // Select Intel Arc Pro B50 (device ID 0xe212)
         if (props.vendorID == 0x8086 && props.deviceID == 0xe212 && physical_device == VK_NULL_HANDLE) {
-            physical_device = device;
+            physical_device = dev;
             std::printf("    ^-- SELECTED (Arc Pro B50)\n");
         }
     }
 
     if (physical_device == VK_NULL_HANDLE) {
         std::fprintf(stderr, "\nERROR: No Intel Arc Pro B50 (device 0xe212) found\n");
-        vkDestroyInstance(instance, nullptr);
-        return 1;
+        goto err_destroy_instance;
     }
 
     std::printf("\nSelected Intel Arc Pro B50 for memory allocation\n");
 
-    uint32_t queue_family_count = 0;
-    vkGetPhysicalDeviceQueueFamilyProperties(physical_device, &queue_family_count, nullptr);
-
-    VkDeviceQueueCreateInfo queue_info{};
+    // Logical device
     queue_info.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
     queue_info.queueFamilyIndex = 0;
     queue_info.queueCount = 1;
-    float queue_priority = 1.0f;
     queue_info.pQueuePriorities = &queue_priority;
 
-    VkDeviceCreateInfo device_info{};
     device_info.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
     device_info.queueCreateInfoCount = 1;
     device_info.pQueueCreateInfos = &queue_info;
 
-    VkDevice device;
     result = vkCreateDevice(physical_device, &device_info, nullptr, &device);
     if (result != VK_SUCCESS) {
-        std::fprintf(stderr, "Failed to create logical device: %s\n", vk_result_to_string(result));
-        vkDestroyInstance(instance, nullptr);
-        return 1;
+        std::fprintf(stderr, "Failed to create logical device: %s\n", vk::to_string( static_cast<vk::Result>( result ) ).c_str());
+        goto err_destroy_instance;
     }
 
-    VkPhysicalDeviceMemoryProperties memory_properties;
+    // Memory type
     vkGetPhysicalDeviceMemoryProperties(physical_device, &memory_properties);
 
-    uint32_t memory_type_index = UINT32_MAX;
     for (uint32_t i = 0; i < memory_properties.memoryTypeCount; i++) {
         if (memory_properties.memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) {
             memory_type_index = i;
@@ -342,79 +337,67 @@ int main(int argc, char* argv[]) {
 
     if (memory_type_index == UINT32_MAX) {
         std::fprintf(stderr, "No suitable memory type found\n");
-        vkDestroyDevice(device, nullptr);
-        vkDestroyInstance(instance, nullptr);
-        return 1;
+        goto err_destroy_device;
     }
 
-    const VkDeviceSize allocation_size = (VkDeviceSize)memory_mb * 1024 * 1024;  // MB to bytes
+    // Buffer
+    allocation_size = (VkDeviceSize)memory_mb * 1024 * 1024;
 
-    VkBufferCreateInfo buffer_info{};
     buffer_info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
     buffer_info.size = allocation_size;
     buffer_info.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
     buffer_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 
-    VkBuffer buffer;
     result = vkCreateBuffer(device, &buffer_info, nullptr, &buffer);
     if (result != VK_SUCCESS) {
-        std::fprintf(stderr, "Failed to create buffer: %s\n", vk_result_to_string(result));
-        vkDestroyDevice(device, nullptr);
-        vkDestroyInstance(instance, nullptr);
-        return 1;
+        std::fprintf(stderr, "Failed to create buffer: %s\n", vk::to_string( static_cast<vk::Result>( result ) ).c_str());
+        goto err_destroy_device;
     }
 
+    // Memory allocation
     VkMemoryRequirements mem_requirements;
     vkGetBufferMemoryRequirements(device, buffer, &mem_requirements);
 
-    VkMemoryAllocateInfo alloc_info{};
     alloc_info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
     alloc_info.allocationSize = mem_requirements.size;
     alloc_info.memoryTypeIndex = memory_type_index;
 
-    VkDeviceMemory device_memory;
     result = vkAllocateMemory(device, &alloc_info, nullptr, &device_memory);
     if (result != VK_SUCCESS) {
-        std::fprintf(stderr, "Failed to allocate device memory: %s\n", vk_result_to_string(result));
-        vkDestroyBuffer(device, buffer, nullptr);
-        vkDestroyDevice(device, nullptr);
-        vkDestroyInstance(instance, nullptr);
-        return 1;
+        std::fprintf(stderr, "Failed to allocate device memory: %s\n", vk::to_string( static_cast<vk::Result>( result ) ).c_str());
+        goto err_destroy_buffer;
     }
 
+    // Bind memory
     result = vkBindBufferMemory(device, buffer, device_memory, 0);
     if (result != VK_SUCCESS) {
-        std::fprintf(stderr, "Failed to bind buffer memory: %s\n", vk_result_to_string(result));
-        vkFreeMemory(device, device_memory, nullptr);
-        vkDestroyBuffer(device, buffer, nullptr);
-        vkDestroyDevice(device, nullptr);
-        vkDestroyInstance(instance, nullptr);
-        return 1;
+        std::fprintf(stderr, "Failed to bind buffer memory: %s\n", vk::to_string( static_cast<vk::Result>( result ) ).c_str());
+        goto err_free_memory;
     }
 
     std::printf("\nSuccessfully allocated %u MB of GPU memory\n", memory_mb);
     std::printf("PCI device: %04x:%02x:%02x.%d\n", target_pci.domain, target_pci.bus, target_pci.device, target_pci.function);
 
-    // Setup SR-IOV if requested (after memory allocation)
+    // Setup SR-IOV if requested
     if (num_vfs > 0) {
         if (setup_sriov_vfs(target_pci, num_vfs) != 0) {
-            vkDestroyBuffer(device, buffer, nullptr);
-            vkFreeMemory(device, device_memory, nullptr);
-            vkDestroyDevice(device, nullptr);
-            vkDestroyInstance(instance, nullptr);
-            return 1;
+            goto err_sriov;
         }
     }
 
     std::printf("Done.\n");
     std::fflush(stdout);
-
-    // Cleanup and exit
-    vkDestroyBuffer(device, buffer, nullptr);
-    vkFreeMemory(device, device_memory, nullptr);
-    vkDestroyDevice(device, nullptr);
-    vkDestroyInstance(instance, nullptr);
-
-    std::printf("Cleanup complete\n");
     return 0;
+
+err_sriov:
+    vkDestroyBuffer(device, buffer, nullptr);
+err_free_memory:
+    vkFreeMemory(device, device_memory, nullptr);
+err_destroy_buffer:
+    vkDestroyDevice(device, nullptr);
+err_destroy_device:
+    vkDestroyInstance(instance, nullptr);
+err_destroy_instance:
+    std::printf("Cleanup complete\n");
+    return 1;
 }

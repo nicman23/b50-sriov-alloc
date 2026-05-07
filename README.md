@@ -1,18 +1,11 @@
 # b50-sriov-alloc
 
-Vulkan application for Intel Arc Pro B50 (Battlemage) SR-IOV VF provisioning. Allocates 2GB GPU memory before creating VFs to ensure host has usable VRAM.
+Vulkan application for Intel Arc Pro B50 (Battlemage) SR-IOV VF provisioning. By Default it allocates 2GB GPU memory before creating VFs to ensure host has usable VRAM.
 
 ## Dependencies (Ubuntu)
 
 ```bash
-# Vulkan runtime and development libraries
-sudo apt install libvulkan-dev vulkan-tools mesa-vulkan-drivers
-
-# Build tools
-sudo apt install cmake g++ make
-
-# For SR-IOV setup (optional, if using ssh for root access)
-sudo apt install openssh-server
+sudo apt install libvulkan-dev vulkan-tools mesa-vulkan-drivers cmake g++ make
 ```
 
 ## Build
@@ -35,15 +28,6 @@ sudo ./b50-sriov-alloc --sriov 3
 sudo ./b50-sriov-alloc --pci 0000:0d:00 --sriov 3
 ```
 
-### Command Line Options
-
-| Option | Description |
-|--------|-------------|
-| `--sriov <num>` | Create specified number of VFs |
-| `--pci <domain:bus:device>` | Target PCI device (default: auto-detect, function=0 forced) |
-| `--memory <MB>` | GPU memory to allocate in MB (default: 2048) |
-| `--help` | Show help message |
-
 ### Examples
 
 ```bash
@@ -62,6 +46,9 @@ sudo ./b50-sriov-alloc --pci 0000:0d:00 --sriov 3
 
 ## Notes
 
-- Requires root access to write to `/sys/bus/pci/devices/*/sriov_numvfs`
-- Auto-detection filters to function 0 to avoid counting same device multiple times
-- Error if multiple Intel Arc Pro B50 devices found (use `--pci` to specify)
+- If multiple Intel Arc Pro B50 devices found use `--pci` to specify
+- To force Mesa Vulkan to report only one default GPU (typically VF 0), use:
+
+```bash
+export MESA_VK_DEVICE_SELECT_FORCE_DEFAULT_DEVICE=1
+```

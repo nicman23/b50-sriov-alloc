@@ -117,7 +117,8 @@ int detect_intel_b50_pci(PciAddress& out_addr, std::vector<PciAddress>& found_de
         // Skip . and .. and hidden files
         if (entry->d_name[0] == '.') continue;
 
-        char vendor_path[256], device_path_str[256];
+        // PCI device names are max 12 chars (0000:dd:dd.d), paths max ~40 chars
+        char vendor_path[512], device_path_str[512];
         snprintf(vendor_path, sizeof(vendor_path), "%s/%s/vendor", sysfs_path, entry->d_name);
         snprintf(device_path_str, sizeof(device_path_str), "%s/%s/device", sysfs_path, entry->d_name);
 

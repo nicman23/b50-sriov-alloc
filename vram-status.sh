@@ -6,7 +6,7 @@
 
 set -e
 
-PCI=$(lspci -nn | grep -E "8086:(e211|e212|e223)" | head -1 | cut -d' ' -f1)
+PCI=$(lspci -nn | grep -E "8086:(e211|e212|e222|e223)" | head -1 | cut -d' ' -f1)
 if [ -z "$PCI" ]; then
     echo "ERROR: No Intel Arc Pro B50/B70 found" >&2
     exit 1
@@ -26,7 +26,7 @@ total=$(( lmem_end - lmem_start + 1 ))
 
 vf_total=0
 echo "VFs:"
-for vf in "$SRIOV_DIR"/vf*/; do
+for vf in "$SRIOV_DIR"/vf*; do
     n=$(basename "$vf")
     quota=$(cat "$vf/tile0/vram_quota")
     if [ "$quota" -ne 0 ]; then

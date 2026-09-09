@@ -160,10 +160,11 @@ int detect_intel_b50_pci(PciAddress& out_addr, std::vector<PciAddress>& found_de
             // Battlemage (BMG) device IDs:
             // - 0xe211 (Arc Pro B60)
             // - 0xe212 (Arc Pro B50)
+            // - 0xe222 (Arc Pro B65)
             // - 0xe223 (Arc Pro B70)
             if (vendor_id == 0x8086 &&
                 (device_id == 0xe211 || device_id == 0xe212 ||
-                 device_id == 0xe223)) {
+                 device_id == 0xe222 || device_id == 0xe223)) {
 
                 unsigned int domain, bus, dev, func;
                 if (std::sscanf(entry->d_name, "%x:%x:%x.%x", &domain, &bus, &dev, &func) == 4) {
@@ -270,11 +271,11 @@ int main(int argc, char* argv[]) {
         int result = detect_intel_b50_pci(target_pci, found_devices);
 
         if (result == 0) {
-            std::fprintf(stderr, "ERROR: Could not auto-detect Intel Arc Pro B50/B70\n");
+            std::fprintf(stderr, "ERROR: Could not auto-detect supported Intel Arc Pro cards\n");
             std::fprintf(stderr, "Use --pci <bus:device.func> to specify manually\n");
             return 1;
         } else if (result == 2) {
-            std::fprintf(stderr, "ERROR: Multiple Intel Arc Pro B50/B70 devices found:\n");
+            std::fprintf(stderr, "ERROR: Multiple supported Intel Arc Pro devices found:\n");
             for (const auto& addr : found_devices) {
                 std::fprintf(stderr, "  - %04x:%02x:%02x.%d\n", addr.domain, addr.bus, addr.device, addr.function);
             }
@@ -284,7 +285,7 @@ int main(int argc, char* argv[]) {
             target_bus = target_pci.bus;
             target_device = target_pci.device;
             target_function = target_pci.function;
-            std::printf("Auto-detected Intel Arc Pro B50/B70 at PCI %04x:%02x:%02x.%d\n",
+            std::printf("Auto-detected supported Intel Arc Pro at PCI %04x:%02x:%02x.%d\n",
                         target_pci.domain, target_bus, target_device, target_function);
         }
     } else {
@@ -338,14 +339,34 @@ int main(int argc, char* argv[]) {
         vkGetPhysicalDeviceProperties(dev, &props);
         std::printf("  - %s (vendor 0x%04x, device 0x%04x)\n", props.deviceName, props.vendorID, props.deviceID);
 
-        if (props.vendorID == 0x8086 && (props.deviceID == 0xe211 || props.deviceID == 0xe223 || props.deviceID == 0xe223) && physical_device == VK_NULL_HANDLE) {
-            physical_device = dev;
-            std::printf("    ^-- SELECTED (%s)\n", props.deviceID == 0xe212 ? "Arc Pro B50" : "Arc Pro B70");
+        if (props.vendorID == 0x8086 && physical_device == VK_NULL_HANDLE) {
+            std::string device_name;
+            switch (props.deviceID) {
+                case 0xe211:
+                    device_name = "Arc Pro B60";
+                    physical_device = dev;
+                    break;
+                case 0xe212:
+                    device_name = "Arc Pro B50";
+                    physical_device = dev;
+                    break;
+                case 0xe222:
+                    device_name = "Arc Pro B65";
+                    physical_device = dev;
+                    break;
+                case 0xe223:
+                    device_name = "Arc Pro B70";
+                    physical_device = dev;
+                    break;
+            }
+            if (physical_device != VK_NULL_HANDLE) {
+                std::printf("    ^-- SELECTED (%s)\n", device_name.c_str());
+            }
         }
     }
 
     if (physical_device == VK_NULL_HANDLE) {
-        std::fprintf(stderr, "\nERROR: No Intel Arc Pro B50/B70 (device 0xe212/0xe223) found\n");
+        std::fprintf(stderr, "\nERROR: No supported Intel Arc Pro cards found\n");
         goto err_destroy_instance;
     }
 

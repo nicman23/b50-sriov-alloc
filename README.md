@@ -1,6 +1,13 @@
 # b50-sriov-alloc
 
-Vulkan application for Intel Arc Pro B50/B70 (Battlemage) SR-IOV VF provisioning. By Default it allocates 2GB GPU memory before creating VFs to ensure host has usable VRAM.
+Vulkan application for Intel Arc Pro Battlemage SR-IOV VF provisioning. By Default it allocates 2GB GPU memory before creating VFs to ensure host has usable VRAM.
+
+## Supported cards
+
+* Intel Arc Pro B50 (`0xe212`)
+* Intel Arc Pro B60 (`0xe211`)
+* Intel Arc Pro B65 (`0xe222`)
+* Intel Arc Pro B70 (`0xe223`)
 
 ## Dependencies (Ubuntu)
 

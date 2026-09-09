@@ -6,7 +6,7 @@
 
 set -e
 
-PCI=$(lspci -nn | grep -E "8086:(e212|e223)" | head -1 | cut -d' ' -f1)
+PCI=$(lspci -nn | grep -E "8086:(e211|e212|e223)" | head -1 | cut -d' ' -f1)
 if [ -z "$PCI" ]; then
     echo "ERROR: No Intel Arc Pro B50/B70 found" >&2
     exit 1

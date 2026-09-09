@@ -157,8 +157,13 @@ int detect_intel_b50_pci(PciAddress& out_addr, std::vector<PciAddress>& found_de
             dev_file >> std::hex >> device_id;
 
             // Intel vendor ID: 0x8086
-            // Battlemage (BMG) device IDs: 0xe212 (Arc Pro B50), 0xe223 (Arc Pro B70)
-            if (vendor_id == 0x8086 && (device_id == 0xe212 || device_id == 0xe223)) {
+            // Battlemage (BMG) device IDs:
+            // - 0xe211 (Arc Pro B60)
+            // - 0xe212 (Arc Pro B50)
+            // - 0xe223 (Arc Pro B70)
+            if (vendor_id == 0x8086 &&
+                (device_id == 0xe211 || device_id == 0xe212 ||
+                 device_id == 0xe223)) {
 
                 unsigned int domain, bus, dev, func;
                 if (std::sscanf(entry->d_name, "%x:%x:%x.%x", &domain, &bus, &dev, &func) == 4) {
@@ -333,7 +338,7 @@ int main(int argc, char* argv[]) {
         vkGetPhysicalDeviceProperties(dev, &props);
         std::printf("  - %s (vendor 0x%04x, device 0x%04x)\n", props.deviceName, props.vendorID, props.deviceID);
 
-        if (props.vendorID == 0x8086 && (props.deviceID == 0xe212 || props.deviceID == 0xe223) && physical_device == VK_NULL_HANDLE) {
+        if (props.vendorID == 0x8086 && (props.deviceID == 0xe211 || props.deviceID == 0xe223 || props.deviceID == 0xe223) && physical_device == VK_NULL_HANDLE) {
             physical_device = dev;
             std::printf("    ^-- SELECTED (%s)\n", props.deviceID == 0xe212 ? "Arc Pro B50" : "Arc Pro B70");
         }
